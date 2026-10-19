@@ -1,0 +1,4 @@
+backups/
+test-output/
+node_modules/
+*.json.bak
