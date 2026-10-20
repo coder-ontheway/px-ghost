@@ -43,6 +43,8 @@
   function lsGet(k, d) { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } }
   function lsSet(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { /* 無痕模式等 */ } }
   function toast(msg, ms) {
+    // 同時只顯示一則，新的取代舊的，避免文字疊在一起
+    document.querySelectorAll('.toast').forEach((t) => t.remove());
     const el = document.createElement('div');
     el.className = 'toast'; el.textContent = msg; el.setAttribute('role', 'status');
     document.body.appendChild(el);
@@ -801,13 +803,58 @@
       return '<button class="li" data-act="nav" data-to="product" data-id="' + p.id + '"><div class="spread"><span class="title">' + esc(p.name) + (p.spec ? ' <span class="muted small">' + esc(p.spec) + '</span>' : '') + ' ' + mockBadge(p) + '</span>' + cmpBadge(h.cmp) + '</div>' +
         '<div class="pair"><div><div class="lbl">上次 ' + esc(prev ? prev.txn.date : '—') + '</div><div class="val">' + money(prev && prev.price) + '</div></div>' +
         '<div><div class="lbl">本次 ' + esc(cur ? cur.txn.date : '—') + '</div><div class="val">' + money(cur && cur.price) + '</div></div></div>' +
+        sparkline(h) +
         '<div class="meta">差額 ' + signed(h.cmp.diff) + '・歷史最低 ' + money(h.min) + '・最高 ' + money(h.max) + '・購買 ' + h.count + ' 次（有效 ' + h.validCount + '）</div></button>';
     }).join('');
     return topbar('商品價格變化') + '<main>' + searchBar(true) +
       '<div class="chips">' + chip('all', '全部') + chip('up', '上漲') + chip('down', '下降') + chip('same', '不變') + chip('na', '無法比較') + '</div>' +
-      modeSwitch() +
+      modeSwitch() + changeChart(hs) +
       '<div class="list">' + (rows || '<p class="muted">沒有符合的商品。</p>') + '</div></main>';
   }
+  /*
+   * 漲跌幅度一覽：以 0% 為中線，上漲往右（紅）、下降往左（綠），長度＝漲跌百分比。
+   * 方向同時用左右位置與 ▲▼ 文字表示，不只靠顏色。點一列進入該商品頁。
+   */
+  function changeChart(hs) {
+    const list = hs.filter(({ h }) => h.status === 'up' || h.status === 'down')
+      .sort((a, b) => b.h.cmp.pct - a.h.cmp.pct);
+    if (!list.length) return '';
+    const max = Math.max.apply(null, list.map(({ h }) => Math.abs(h.cmp.pct)));
+    const same = hs.filter(({ h }) => h.status === 'same').length;
+    const rows = list.map(({ product: p, h }) => {
+      const up = h.cmp.pct > 0;
+      const w = Math.max(2, (Math.abs(h.cmp.pct) / max) * 45).toFixed(1); // 留一半以上給數值文字，手機也不會超出
+      const label = (up ? '▲ +' : '▼ ') + h.cmp.pct + '%';
+      const tip = p.name + '：' + money(h.previous.price) + ' → ' + money(h.latest.price) + '（' + signed(h.cmp.diff) + '，' + (up ? '+' : '') + h.cmp.pct + '%）';
+      return '<button class="cc-row" data-act="nav" data-to="product" data-id="' + p.id + '" title="' + esc(tip) + '" aria-label="' + esc(tip) + '">' +
+        '<span class="cc-name">' + esc(p.name) + '</span>' +
+        '<span class="cc-half neg">' + (up ? '' : '<i class="cc-bar down" style="width:' + w + '%"></i><em class="cc-val">' + label + '</em>') + '</span>' +
+        '<span class="cc-half pos">' + (up ? '<i class="cc-bar up" style="width:' + w + '%"></i><em class="cc-val">' + label + '</em>' : '') + '</span></button>';
+    }).join('');
+    return '<section class="card cc"><div class="spread"><h2>漲跌幅度一覽</h2><span class="small muted">點商品看走勢</span></div>' +
+      '<div class="cc-axis"><span></span><span class="small muted">◀ 下降</span><span class="small muted">上漲 ▶</span></div>' +
+      '<div class="cc-rows">' + rows + '</div>' +
+      '<p class="small muted">長度代表漲跌百分比（' + (S.filter.mode === 'list' ? '原價單價' : '每件實付均價') + '，最近一次 vs 前一次）。' + (same ? '另有 ' + same + ' 項價格不變。' : '') + '</p></section>';
+  }
+
+  // 卡片裡的小走勢線：每次有效購買的價格，最後一點用漲跌顏色標示
+  function sparkline(h) {
+    const pts = h.rows.filter((r) => r.price != null);
+    if (pts.length < 2) return '';
+    const W = 300, H = 40, pad = 5;
+    let lo = Math.min.apply(null, pts.map((r) => r.price)), hi = Math.max.apply(null, pts.map((r) => r.price));
+    if (hi === lo) { hi += 1; lo -= 1; }
+    const x = (i) => pad + (i / (pts.length - 1)) * (W - 2 * pad);
+    const y = (v) => pad + (1 - (v - lo) / (hi - lo)) * (H - 2 * pad);
+    const d = pts.map((r, i) => (i ? 'L' : 'M') + x(i).toFixed(1) + ' ' + y(r.price).toFixed(1)).join(' ');
+    const last = pts[pts.length - 1];
+    // 線條隨卡片寬度拉伸；圓點用 HTML 疊上去，才不會被拉成橢圓
+    return '<div class="spark" role="img" aria-label="價格走勢：' + esc(pts.map((r) => r.txn.date + ' ' + money(r.price)).join('、')) + '">' +
+      '<svg viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none"><path d="' + d + '" vector-effect="non-scaling-stroke"/></svg>' +
+      pts.map((r, i) => '<i class="' + (i === pts.length - 1 ? 'last ' + h.status : '') + '" style="left:' + (x(i) / W * 100).toFixed(2) + '%;top:' + y(r.price).toFixed(1) + 'px"></i>').join('') +
+      '</div><div class="spark-lbl small muted"><span>' + esc(pts[0].txn.date) + ' ' + money(pts[0].price) + '</span><span>' + pts.length + ' 次</span><span>' + esc(last.txn.date) + ' ' + money(last.price) + '</span></div>';
+  }
+
   function modeSwitch() {
     return '<div class="chips"><button class="chip' + (S.filter.mode === 'paid' ? ' on' : '') + '" data-act="setFilter" data-k="mode" data-v="paid">比較每件實付均價</button>' +
       '<button class="chip' + (S.filter.mode === 'list' ? ' on' : '') + '" data-act="setFilter" data-k="mode" data-v="list">比較原價單價</button></div>' +
