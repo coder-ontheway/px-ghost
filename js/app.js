@@ -1006,7 +1006,7 @@
         '<div class="stack"><button class="btn" data-act="doRestore" data-mode="merge">合併（保留現有資料，只加入沒有的）</button>' +
         '<button class="btn danger" data-act="doRestore" data-mode="replace">取代（先清空目前全部資料）</button><button class="btn" data-act="cancelRestore">取消</button></div></section>'
       : '<section class="card" id="restore"><h2>還原備份</h2><p class="small muted">選擇先前匯出的 .json 備份檔。選好後會先顯示內容，確認後才寫入。</p>' +
-        '<label class="btn block" for="restoreFile" style="justify-content:center">選擇備份檔</label><input id="restoreFile" type="file" accept=".json,application/json" hidden data-act="restoreFile"></section>';
+        '<label class="btn block" for="restoreFile" style="justify-content:center">選擇備份檔</label><input id="restoreFile" type="file" hidden data-act="restoreFile"></section>';
     return topbar('備份與資料') + '<main>' +
       '<section class="card"><h2>資料保存在哪裡</h2><div class="prose small">' +
       '<p>所有資料（交易、商品、截圖）只存在<b>這支手機的這個瀏覽器</b>裡（IndexedDB），沒有雲端同步，也不會上傳。</p>' +
@@ -1090,14 +1090,23 @@
       if (err) { toast('無法還原：' + err, 4500); return; }
       S.restore = { obj };
       render();
-    } catch (e) { toast('無法讀取備份檔：' + e.message, 4500); }
+    } catch (e) { toast('這個檔案不是抓鬼系統的 JSON 備份檔（' + e.message + '）', 5000); }
   }
   async function doRestore(mode) {
+    try { await restoreData(mode); } catch (e) {
+      console.error(e);
+      toast('還原失敗：' + (e.message || e) + '。目前資料沒有變動，請再試一次。', 6000);
+    }
+  }
+  async function restoreData(mode) {
+    toast('正在還原，請稍候…', 8000);
     const d = S.restore.obj.data;
     const images = (d.images || []).map((im) => ({ id: im.id, txnId: im.txnId, name: im.name, type: im.type, hash: im.hash, importedAt: im.importedAt, isMock: im.isMock, blob: dataURLToBlob(im.dataUrl) })).filter((x) => x.blob);
-    let put;
+    let put, del;
     if (mode === 'replace') {
-      await DB.clear(['transactions', 'items', 'products', 'images']);
+      // 刪除舊資料與寫入新資料放在同一個資料庫交易裡：寫入失敗時舊資料原封不動
+      del = {};
+      for (const st of ['transactions', 'items', 'products', 'images']) del[st] = (await DB.getAll(st)).map((x) => x.id);
       put = { transactions: d.transactions, items: d.items, products: d.products, images };
     } else {
       const has = (arr) => new Set(arr.map((x) => x.id));
@@ -1105,7 +1114,7 @@
       const himg = new Set((await DB.getAll('images')).map((x) => x.id));
       put = { transactions: d.transactions.filter((x) => !ht.has(x.id)), items: d.items.filter((x) => !hi.has(x.id)), products: d.products.filter((x) => !hp.has(x.id)), images: images.filter((x) => !himg.has(x.id)) };
     }
-    await DB.write({ put });
+    await DB.write({ put, del });
     S.restore = null;
     await loadAll();
     toast('還原完成：加入 ' + put.transactions.length + ' 筆交易、' + put.items.length + ' 列商品', 4000);

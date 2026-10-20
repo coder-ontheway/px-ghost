@@ -89,8 +89,9 @@
     if (!names.length) return Promise.resolve();
     return run((db) => {
       const tx = db.transaction(names, 'readwrite');
-      for (const [s, recs] of Object.entries(ops.put || {})) for (const r of recs) tx.objectStore(s).put(r);
+      // 先刪後寫：同一個 id 同時出現在刪除與寫入時，保留寫入的新資料
       for (const [s, keys] of Object.entries(ops.del || {})) for (const k of keys) tx.objectStore(s).delete(k);
+      for (const [s, recs] of Object.entries(ops.put || {})) for (const r of recs) tx.objectStore(s).put(r);
       return done(tx);
     });
   }
