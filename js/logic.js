@@ -33,29 +33,52 @@
   };
   const SPEC_RE = /(\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?)\s*(ml|cc|毫升|kg|公斤|公克|公升|g|克|l)(?![a-z])/i;
 
-  // 由名稱或規格字串取出容量／重量；找不到時回傳 null，不猜測
+  // 入數：「x6」「*6入」「6入」「12包」…
+  const COUNT_RE = /[x×*]\s*(\d{1,3})(?!\d)\s*(?:入|瓶|罐|包|盒|顆|粒|片|條|支|袋|捲|杯|組)?|(\d{1,3})\s*(?:入|瓶|罐|包|盒|顆|粒|片|條|支|袋|捲|杯|組)/i;
+
+  // 由名稱或規格字串取出容量／重量與入數；都找不到時回傳 null，不猜測
   function parseSpec(text) {
     if (!text) return null;
-    const s = String(text).normalize('NFKC');
+    let s = String(text).normalize('NFKC');
+    const out = { value: null, unit: null, count: null, raw: null, raws: [] };
     const m = s.match(SPEC_RE);
-    if (!m) return null;
-    const num = parseFloat(m[1].replace(/,/g, ''));
-    const u = UNIT_MAP[m[2].toLowerCase()];
-    if (!u || !(num > 0)) return null;
-    return { value: num * u[1], unit: u[0], raw: m[0] };
+    if (m) {
+      const num = parseFloat(m[1].replace(/,/g, ''));
+      const u = UNIT_MAP[m[2].toLowerCase()];
+      if (u && num > 0) { out.value = num * u[1]; out.unit = u[0]; out.raws.push(m[0]); s = s.replace(m[0], ' '); }
+    }
+    const c = s.match(COUNT_RE);
+    if (c) { const n = parseInt(c[1] || c[2], 10); if (n > 0) { out.count = n; out.raws.push(c[0]); } }
+    if (!out.raws.length) return null;
+    out.raw = out.raws.length === 1 ? out.raws[0] : String(text).normalize('NFKC').slice(
+      Math.min.apply(null, out.raws.map((r) => String(text).normalize('NFKC').indexOf(r)).filter((i) => i >= 0)));
+    out.raw = out.raw.trim();
+    return out;
   }
 
   function specKey(spec) {
     const p = parseSpec(spec);
-    if (p) return p.unit + ':' + Math.round(p.value * 1000) / 1000;
+    if (p) return (p.unit ? p.unit + ':' + Math.round(p.value * 1000) / 1000 : '') + (p.count > 1 ? 'x' + p.count : '');
     return normalizeText(spec).replace(/\s/g, '');
+  }
+
+  // 兩個規格是否相同：'same'／'diff'／'unknown'（任一邊沒有規格）
+  function specRelation(a, b) {
+    if (!a || !b) return 'unknown';
+    const pa = parseSpec(a), pb = parseSpec(b);
+    if (pa && pb) {
+      // 一邊只有容量、一邊只有入數時無法判斷
+      if ((pa.unit && pb.unit) || (!pa.unit && !pb.unit)) return specKey(a) === specKey(b) ? 'same' : 'diff';
+      return 'unknown';
+    }
+    return specKey(a) === specKey(b) ? 'same' : 'diff';
   }
 
   // 名稱去掉規格文字後的比對用名稱
   function baseName(name, spec) {
     let s = stripDeptCode(name).name.normalize('NFKC');
     const p = parseSpec(s);
-    if (p) s = s.replace(p.raw, ' ');
+    if (p) p.raws.forEach((r) => { s = s.replace(r, ' '); });
     if (spec) s = s.split(String(spec).normalize('NFKC')).join(' ');
     return normalizeText(s).replace(/[\s()（）\[\]【】]/g, '');
   }
@@ -87,40 +110,99 @@
     return dice;
   }
 
+  // 價格差超過這個比例（且規格無法確認相同）時，視為可能是不同容量／規格
+  const PRICE_TOL = 0.3;
+
   /*
-   * 商品比對，優先順序：
-   * 1. 條碼一致 2. 名稱＋品牌＋規格一致 3. 相似 → 待使用者確認
-   * 規格兩邊都有且不同時，絕不視為同一商品。
+   * 逐項比較一筆商品列與一個已知商品：條碼、名稱、品牌、規格（容量／重量／入數）、價格。
+   * 每項結果：same 相同、diff 不同、unknown 缺資料、similar 名稱相似。
+   * verdict：same 可自動歸入、check 需要使用者確認、conflict 絕不視為同一商品。
+   * opts.itemPrice / opts.refPrice：本次與該商品上次的每件價格（可省略）
    */
-  function matchProduct(item, products) {
+  function compareToProduct(item, product, opts) {
+    opts = opts || {};
+    const dims = [];
+    const ib = item.barcode ? String(item.barcode).trim() : '', pb = product.barcode ? String(product.barcode).trim() : '';
+    dims.push({ key: 'barcode', label: '條碼', a: ib || null, b: pb || null, result: ib && pb ? (ib === pb ? 'same' : 'diff') : 'unknown' });
+    const spec = effectiveSpec(item);
+    const bn = baseName(item.rawName, spec);
+    let nameSim = 0;
+    for (const k of product.keys || []) nameSim = Math.max(nameSim, similarity(bn, k.split('|')[0]));
+    if (!(product.keys || []).length) nameSim = similarity(bn, baseName(product.name, product.spec));
+    dims.push({ key: 'name', label: '名稱', a: item.rawName, b: product.name, result: nameSim >= 1 ? 'same' : nameSim >= 0.5 ? 'similar' : 'diff', score: nameSim });
+    const ibr = normalizeText(item.brand), pbr = normalizeText(product.brand);
+    dims.push({ key: 'brand', label: '品牌', a: item.brand || null, b: product.brand || null, result: ibr && pbr ? (ibr === pbr ? 'same' : 'diff') : 'unknown' });
+    dims.push({ key: 'spec', label: '容量／重量／入數', a: spec || null, b: product.spec || null, result: specRelation(spec, product.spec) });
+    let pr = { key: 'price', label: '價格', a: isNum(opts.itemPrice) ? opts.itemPrice : null, b: isNum(opts.refPrice) ? opts.refPrice : null, result: 'unknown', pct: null };
+    if (pr.a > 0 && pr.b > 0) {
+      pr.pct = round2(((pr.a - pr.b) / pr.b) * 100);
+      pr.result = Math.abs(pr.a - pr.b) / pr.b > PRICE_TOL ? 'diff' : 'same';
+    }
+    dims.push(pr);
+    const d = Object.fromEntries(dims.map((x) => [x.key, x]));
+    let verdict, reason = null;
+    if (d.barcode.result === 'same') verdict = 'same';
+    else if (d.barcode.result === 'diff') { verdict = 'conflict'; reason = '條碼不同'; }
+    else if (d.spec.result === 'diff') { verdict = 'conflict'; reason = '規格不同'; }
+    else if (d.brand.result === 'diff') { verdict = 'conflict'; reason = '品牌不同'; }
+    else if (d.name.result === 'diff') { verdict = 'conflict'; reason = '名稱不同'; }
+    else if (d.name.result === 'similar') { verdict = 'check'; reason = '名稱相似'; }
+    else if (d.spec.result !== 'same' && d.price.result === 'diff') {
+      verdict = 'check'; reason = '價差 ' + (pr.pct > 0 ? '+' : '') + pr.pct + '%，可能是不同容量／規格';
+    } else if (d.spec.result === 'unknown' && spec && !product.spec) {
+      verdict = 'check'; reason = '這筆有規格（' + spec + '），已知商品沒有規格';
+    } else verdict = 'same';
+    return { dims, verdict, reason };
+  }
+
+  /*
+   * 商品比對：
+   * 1. 條碼一致 → 同一商品；條碼不同 → 絕不合併
+   * 2. 名稱一致，且品牌、規格沒有衝突、價格沒有異常 → 同一商品
+   * 3. 規格、品牌兩邊都有且不同 → 絕不視為同一商品
+   * 4. 同名商品有兩種以上（例如不同容量）、規格無法確認、或價差過大 → 待使用者確認
+   * opts.priceOf(product) 回傳該商品上次的每件價格；item 的價格由 金額÷數量 計算
+   */
+  function matchProduct(item, products, opts) {
+    opts = opts || {};
     const pool = products.filter((p) => !!p.isMock === !!item.isMock);
     if (item.barcode) {
       const b = String(item.barcode).trim();
       const hit = pool.find((p) => p.barcode && String(p.barcode).trim() === b);
-      if (hit) return { type: 'barcode', product: hit, candidates: [] };
+      if (hit) return { type: 'barcode', product: hit, candidates: [], specConflicts: [] };
     }
     const key = productKey(item);
-    const exact = pool.find((p) => (p.keys || []).includes(key));
-    if (exact) return { type: 'exact', product: exact, candidates: [] };
-
-    const [bn, , sk] = key.split('|');
-    const candidates = [];
-    const specConflicts = [];
+    const itemPrice = isNum(item.paidAmount) && isNum(item.qty) && item.qty > 0 && item.paidAmount > 0 ? item.paidAmount / item.qty : null;
+    const sames = [], checks = [], specConflicts = [];
     for (const p of pool) {
       if ((p.notSame || []).includes(key)) continue;
-      let best = 0, conflict = false;
-      for (const k of p.keys || []) {
-        const [pbn, , psk] = k.split('|');
-        const sim = similarity(bn, pbn);
-        if (sim < 0.5) continue;
-        if (sk && psk && sk !== psk) { conflict = true; continue; }
-        best = Math.max(best, sim);
-      }
-      if (best > 0) candidates.push({ product: p, score: best });
-      else if (conflict) specConflicts.push(p);
+      const c = compareToProduct(item, p, { itemPrice, refPrice: opts.priceOf ? opts.priceOf(p) : null });
+      const name = c.dims[1];
+      if (c.verdict === 'same') sames.push({ product: p, score: name.score, cmp: c });
+      else if (c.verdict === 'check') checks.push({ product: p, score: name.score, cmp: c });
+      else if (name.result !== 'diff' && c.reason !== '名稱不同') specConflicts.push(p);
     }
-    candidates.sort((x, y) => y.score - x.score);
-    if (candidates.length) return { type: 'similar', product: null, candidates: candidates.slice(0, 5), specConflicts };
+    // 只有一個完全符合、且沒有其他同名候選（例如另一種容量）才自動歸入
+    if (sames.length === 1 && !checks.some((x) => x.score >= 1)) {
+      return { type: 'exact', product: sames[0].product, candidates: [], specConflicts, cmp: sames[0].cmp };
+    }
+    // 同名不同容量（例如 936ml／1858ml）而明細沒有容量：各容量都已設定、且只有一個價格相符時，依價格對應
+    if (sames.length === 1 && sames[0].product.spec && sames[0].cmp.dims[4].result === 'same') {
+      const rivals = checks.filter((x) => x.score >= 1);
+      if (rivals.length && rivals.every((x) => x.product.spec && x.cmp.dims[4].result === 'diff' && x.cmp.dims[3].result !== 'same')) {
+        const s0 = sames[0];
+        return { type: 'price', product: s0.product, candidates: [], specConflicts, cmp: s0.cmp,
+          note: '明細沒有容量，依價格對應到 ' + s0.product.spec + '（' + rivals.map((x) => x.product.spec + ' 上次 ' + x.cmp.dims[4].b + ' 元').join('、') + '）' };
+      }
+    }
+    const cands = sames.concat(checks);
+    // 價格最接近的排前面
+    const gap = (x) => { const pr = x.cmp.dims[4]; return pr.pct == null ? 1e9 : Math.abs(pr.pct); };
+    cands.sort((x, y) => y.score - x.score || gap(x) - gap(y));
+    if (cands.length) {
+      const reason = sames.length > 1 || (sames.length && checks.length) ? '有 ' + cands.length + ' 個同名或相似商品（可能是不同容量），請選擇' : cands[0].cmp.reason;
+      return { type: 'similar', product: null, candidates: cands.slice(0, 5), specConflicts, reason };
+    }
     return { type: 'none', product: null, candidates: [], specConflicts };
   }
 
@@ -190,8 +272,8 @@
       r.reason = lp.reason;
       if (!r.txn.date) { r.price = null; r.reason = r.reason || '缺少日期'; }
       if (r.price == null && !r.reason) r.reason = mode === 'list' ? '截圖沒有原價' : '無法計算';
-      r.per100 = r.price != null && specP ? round2((r.price / specP.value) * 100) : null;
-      r.per100Unit = specP ? (specP.unit === 'ml' ? '每100ml' : '每100g') : null;
+      r.per100 = r.price != null && specP && specP.unit ? round2((r.price / (specP.value * (specP.count || 1))) * 100) : null;
+      r.per100Unit = specP && specP.unit ? (specP.unit === 'ml' ? '每100ml' : '每100g') : null;
       if (r.price != null) {
         r.prev = prevValid;
         r.cmp = prevValid ? comparePrices(prevValid.price, r.price) : { status: 'na', diff: null, pct: null, reason: '沒有上次紀錄' };
@@ -200,6 +282,12 @@
           if ((d1 > 0 || d0 > 0) && d1 !== d0) r.cmp.note = '兩次優惠條件不同';
           if ((r.txn.discountTotal || 0) > 0 || (prevValid.txn.discountTotal || 0) > 0)
             r.cmp.note = (r.cmp.note ? r.cmp.note + '；' : '') + '有整筆折扣未分攤';
+          // 價差過大：明細常沒有容量，可能把不同容量的商品當成同一個。使用者確認前不算漲跌
+          const ok = product.priceJumpOk || [];
+          if (Math.abs(r.cmp.pct) > PRICE_TOL * 100 && !ok.includes(r.item.id)) {
+            r.cmp.status = 'check';
+            r.cmp.reason = '價差 ' + (r.cmp.pct > 0 ? '+' : '') + r.cmp.pct + '%，可能是不同容量／規格';
+          }
         }
         validSoFar.push(r);
         prices.push(r.price);
@@ -384,7 +472,7 @@
   }
 
   return {
-    normalizeText, stripDeptCode, parseSpec, specKey, baseName, effectiveSpec, productKey, similarity, matchProduct,
+    normalizeText, stripDeptCode, parseSpec, specKey, specRelation, compareToProduct, PRICE_TOL, baseName, effectiveSpec, productKey, similarity, matchProduct,
     linePrice, comparePrices, productHistory, txnFingerprint, findDuplicateTxn, findRepeatedLines,
     mergePages, splitPages, crossCheck, toCSV, validateBackup, parseAmount, round2,
   };

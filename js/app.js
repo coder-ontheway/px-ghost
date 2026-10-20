@@ -91,7 +91,8 @@
     const txns = S.txns.filter(vis);
     const noDate = txns.filter((t) => !t.date);
     const txnFlags = txns.filter((t) => openFieldFlags(t).some(([f]) => !(f === 'date' && !t.date)));
-    return { match, flagged, noDate, txnFlags, total: match.length + flagged.length + noDate.length + txnFlags.length };
+    const specCheck = histories().filter(({ h }) => h.rows.some((r) => r.cmp && r.cmp.status === 'check'));
+    return { match, flagged, noDate, txnFlags, specCheck, total: match.length + flagged.length + noDate.length + txnFlags.length + specCheck.length };
   }
 
   // ---------- 路由 ----------
@@ -126,6 +127,7 @@
   function cmpBadge(cmp) {
     if (!cmp || cmp.status === 'na') return '<span class="badge na">無法比較' + (cmp && cmp.reason ? '：' + esc(cmp.reason) : '') + '</span>';
     if (cmp.status === 'same') return '<span class="badge same">＝ 價格不變</span>';
+    if (cmp.status === 'check') return '<span class="badge warn">？ 規格待確認（' + (cmp.pct > 0 ? '+' : '') + cmp.pct + '%）</span>';
     const up = cmp.status === 'up';
     return '<span class="badge ' + cmp.status + '">' + (up ? '▲ 上漲 ' : '▼ 下降 ') + signed(cmp.diff) + '（' + (cmp.pct > 0 ? '+' : '') + cmp.pct + '%）</span>';
   }
@@ -559,13 +561,15 @@
       item.candidateIds = [];
       item.matchNote = null;
       if (item.isPromo) { item.matchStatus = 'promo'; item.productId = null; continue; }
-      const m = L.matchProduct(Object.assign({}, item, { isMock: !!isMock }), products);
-      if (m.type === 'barcode' || m.type === 'exact') {
+      const m = L.matchProduct(Object.assign({}, item, { isMock: !!isMock }), products, { priceOf });
+      if (m.type === 'barcode' || m.type === 'exact' || m.type === 'price') {
         item.productId = m.product.id; item.matchStatus = 'auto';
+        if (m.note) item.matchNote = m.note;
         addAlias(m.product, item); changed.set(m.product.id, m.product);
       } else if (m.type === 'similar') {
         item.productId = null; item.matchStatus = 'pending';
         item.candidateIds = m.candidates.map((c) => c.product.id);
+        item.matchNote = m.reason || null;
       } else {
         const p = newProduct(item, isMock);
         products.push(p); changed.set(p.id, p);
@@ -574,6 +578,12 @@
       }
     }
     return Array.from(changed.values());
+  }
+  // 某商品上次的每件實付均價（比對時用來判斷是不是不同容量）
+  function priceOf(p) {
+    if (!S.items.some((i) => i.productId === p.id)) return null;
+    const h = L.productHistory(p, S.items, S.tById, 'paid');
+    return h.latest ? h.latest.price : null;
   }
   function newProduct(item, isMock) {
     const now = nowISO();
@@ -792,10 +802,10 @@
     if (q) hs = hs.filter(({ product }) => L.normalizeText(product.name).includes(q) || (product.aliases || []).some((a) => L.normalizeText(a).includes(q)));
     if (f.from) hs = hs.filter(({ h }) => h.latest && h.latest.txn.date >= f.from);
     if (f.to) hs = hs.filter(({ h }) => h.latest && h.latest.txn.date <= f.to);
-    const counts = { all: hs.length, up: 0, down: 0, same: 0, na: 0 };
+    const counts = { all: hs.length, up: 0, down: 0, same: 0, check: 0, na: 0 };
     hs.forEach(({ h }) => { counts[h.status]++; });
     if (f.changes !== 'all') hs = hs.filter(({ h }) => h.status === f.changes);
-    const order = { up: 0, down: 1, same: 2, na: 3 };
+    const order = { check: 0, up: 1, down: 2, same: 3, na: 4 };
     hs.sort((a, b) => order[a.h.status] - order[b.h.status] || Math.abs(b.h.cmp.pct || 0) - Math.abs(a.h.cmp.pct || 0));
     const chip = (k, label) => '<button class="chip' + (f.changes === k ? ' on' : '') + '" data-act="setFilter" data-k="changes" data-v="' + k + '">' + label + '（' + counts[k] + '）</button>';
     const rows = hs.map(({ product: p, h }) => {
@@ -807,7 +817,7 @@
         '<div class="meta">差額 ' + signed(h.cmp.diff) + '・歷史最低 ' + money(h.min) + '・最高 ' + money(h.max) + '・購買 ' + h.count + ' 次（有效 ' + h.validCount + '）</div></button>';
     }).join('');
     return topbar('商品價格變化') + '<main>' + searchBar(true) +
-      '<div class="chips">' + chip('all', '全部') + chip('up', '上漲') + chip('down', '下降') + chip('same', '不變') + chip('na', '無法比較') + '</div>' +
+      '<div class="chips">' + chip('all', '全部') + chip('up', '上漲') + chip('down', '下降') + chip('same', '不變') + (counts.check ? chip('check', '規格待確認') : '') + chip('na', '無法比較') + '</div>' +
       modeSwitch() + changeChart(hs) +
       '<div class="list">' + (rows || '<p class="muted">沒有符合的商品。</p>') + '</div></main>';
   }
@@ -821,6 +831,7 @@
     if (!list.length) return '';
     const max = Math.max.apply(null, list.map(({ h }) => Math.abs(h.cmp.pct)));
     const same = hs.filter(({ h }) => h.status === 'same').length;
+    const check = hs.filter(({ h }) => h.status === 'check').length;
     const rows = list.map(({ product: p, h }) => {
       const up = h.cmp.pct > 0;
       const w = Math.max(2, (Math.abs(h.cmp.pct) / max) * 45).toFixed(1); // 留一半以上給數值文字，手機也不會超出
@@ -834,7 +845,7 @@
     return '<section class="card cc"><div class="spread"><h2>漲跌幅度一覽</h2><span class="small muted">點商品看走勢</span></div>' +
       '<div class="cc-axis"><span></span><span class="small muted">◀ 下降</span><span class="small muted">上漲 ▶</span></div>' +
       '<div class="cc-rows">' + rows + '</div>' +
-      '<p class="small muted">長度代表漲跌百分比（' + (S.filter.mode === 'list' ? '原價單價' : '每件實付均價') + '，最近一次 vs 前一次）。' + (same ? '另有 ' + same + ' 項價格不變。' : '') + '</p></section>';
+      '<p class="small muted">長度代表漲跌百分比（' + (S.filter.mode === 'list' ? '原價單價' : '每件實付均價') + '，最近一次 vs 前一次）。' + (same ? '另有 ' + same + ' 項價格不變。' : '') + (check ? '有 ' + check + ' 項價差過大、可能是不同容量，確認前不列入。' : '') + '</p></section>';
   }
 
   // 卡片裡的小走勢線：每次有效購買的價格，最後一點用漲跌顏色標示
@@ -904,6 +915,7 @@
       '<dl class="kv"><dt>價格差額</dt><dd>' + signed(h.cmp.diff) + '</dd><dt>漲跌百分比</dt><dd>' + (h.cmp.pct == null ? '無法比較' : (h.cmp.pct > 0 ? '+' : '') + h.cmp.pct + '%') + '</dd>' +
       '<dt>歷史最低價</dt><dd>' + money(h.min) + '</dd><dt>歷史最高價</dt><dd>' + money(h.max) + '</dd><dt>歷史購買次數</dt><dd>' + h.count + '（有效 ' + h.validCount + '）</dd></dl>' +
       (!editing ? '<div class="row"><button class="btn small" data-act="editProduct" data-id="' + id + '">修改統一名稱／規格</button></div>' : '') + '</section>' + edit +
+      specCheckCard(p, h) +
       modeSwitch() +
       '<section class="card"><h2>價格走勢（每件' + (S.filter.mode === 'paid' ? '實付均價' : '原價') + '）</h2><div id="chart"></div></section>' +
       '<section class="stack"><h2>歷史價格表</h2><div class="tablewrap"><table><thead><tr><th>日期</th><th>原始名稱</th><th class="n">數量</th><th class="n">金額</th><th class="n">折扣</th><th class="n">每件</th>' + (per ? '<th class="n">' + esc(h.rows[0].per100Unit) + '</th>' : '') + '<th>與上次比</th><th>來源</th></tr></thead><tbody>' + rows + '</tbody></table></div></section>' +
@@ -911,6 +923,68 @@
       '<select id="mergeTarget"><option value="">選擇要併入的商品…</option>' + others.map((o) => '<option value="' + o.id + '">' + esc(o.name + (o.spec ? ' ' + o.spec : '')) + '</option>').join('') + '</select>' +
       '<div><button class="btn small" data-act="mergeProduct" data-id="' + id + '">合併</button></div></section>' +
       '</main>';
+  }
+
+  /*
+   * 價差過大的相鄰兩筆：請使用者確認是不是同一容量。
+   * 填容量後，容量和這個商品不同的那筆會移到「同名＋該容量」的商品（沒有就新建）；原始名稱不會被改寫。
+   */
+  function specCheckCard(p, h) {
+    const flagged = h.rows.filter((r) => r.cmp && r.cmp.status === 'check');
+    if (!flagged.length) return '';
+    const rowCtl = (r) => '<div class="spec-row"><div><b>' + esc(r.txn.date || '未填') + '</b>・' + esc(r.item.rawName) + '・每件 <b>' + money(r.price) + '</b>' +
+      (r.item.spec ? ' <span class="muted small">' + esc(r.item.spec) + '</span>' : '') + '</div>' +
+      '<div class="row"><input id="rs-' + r.item.id + '" placeholder="這筆的容量，例如 936ml" value="' + esc(r.item.spec || '') + '" aria-label="容量">' +
+      '<button class="btn small" data-act="setRowSpec" data-id="' + r.item.id + '">套用</button></div></div>';
+    const pairs = flagged.map((r) => '<div class="card flat"><p class="small"><span class="badge warn">？ ' + esc(r.cmp.reason) + '</span></p>' +
+      rowCtl(r.prev) + rowCtl(r) +
+      '<div class="row"><button class="btn small" data-act="jumpOk" data-p="' + p.id + '" data-id="' + r.item.id + '">容量相同，照常比價</button></div></div>').join('');
+    return '<section class="card" style="border:2px solid var(--warn)"><h2>可能是不同容量</h2>' +
+      '<p class="small">明細沒有容量，下面兩筆價差太大，可能是不同容量被當成同一商品。請分別填上容量；容量不同的那筆會分成另一個商品，各自比價。</p>' + pairs + '</section>';
+  }
+
+  async function setRowSpec(itemId) {
+    const i = S.items.find((x) => x.id === itemId);
+    const inp = document.getElementById('rs-' + itemId);
+    const spec = inp ? inp.value.trim() : '';
+    if (!i || !spec) { toast('請先填入容量，例如 936ml'); return; }
+    const p = S.pById[i.productId];
+    const now = nowISO();
+    const u = Object.assign({}, i, { spec, updatedAt: now });
+    if (spec !== (i.spec || '')) u.editLog = (i.editLog || []).concat([{ at: now, summary: '規格 ' + show(i.spec) + ' → ' + spec + '（使用者填入）', changes: [{ field: 'spec', from: i.spec, to: spec }] }]);
+    const ops = { put: { items: [u], products: [] }, del: { products: [] } };
+    let msg;
+    if (p && (!p.spec || L.specRelation(spec, p.spec) === 'same')) {
+      // 商品還沒有規格：這筆的容量就是這個商品的容量
+      const pu = Object.assign({}, p, { keys: p.keys.slice(), aliases: p.aliases.slice(), spec: p.spec || spec, updatedAt: now });
+      addAlias(pu, u);
+      ops.put.products.push(pu);
+      msg = '「' + pu.name + '」設定為 ' + pu.spec;
+    } else {
+      const bn = L.baseName(u.rawName, spec);
+      const target = S.products.find((x) => x.id !== (p && p.id) && !!x.isMock === !!u.isMock && x.spec && L.specRelation(spec, x.spec) === 'same' &&
+        (x.keys || []).some((k) => k.split('|')[0] === bn));
+      const t = target ? Object.assign({}, target, { keys: target.keys.slice(), aliases: target.aliases.slice() }) : newProduct(u, u.isMock);
+      if (target) addAlias(t, u);
+      u.productId = t.id; u.matchStatus = 'manual';
+      u.editLog = (u.editLog || i.editLog || []).concat([{ at: now, summary: '容量不同，從「' + (p ? p.name + (p.spec ? ' ' + p.spec : '') : '') + '」分到「' + t.name + ' ' + t.spec + '」' }]);
+      ops.put.products.push(t);
+      if (p && !S.items.some((x) => x.productId === p.id && x.id !== i.id)) ops.del.products.push(p.id);
+      msg = '已分到「' + t.name + ' ' + t.spec + '」';
+    }
+    await DB.write(ops);
+    await loadAll();
+    toast(msg, 4000);
+    render();
+  }
+
+  async function jumpOk(pid, itemId) {
+    const p = S.pById[pid];
+    if (!p) return;
+    await DB.write({ put: { products: [Object.assign({}, p, { priceJumpOk: Array.from(new Set((p.priceJumpOk || []).concat([itemId]))), updatedAt: nowISO() })] } });
+    await loadAll();
+    toast('已確認容量相同，照常比價');
+    render();
   }
 
   function drawLater() {
@@ -960,6 +1034,7 @@
     const u = Object.assign({}, b, { keys: Array.from(new Set(b.keys.concat(a.keys))), aliases: Array.from(new Set(b.aliases.concat(a.aliases))), updatedAt: nowISO() });
     if (!u.spec && a.spec) u.spec = a.spec;
     if (!u.barcode && a.barcode) u.barcode = a.barcode;
+    u.priceJumpOk = Array.from(new Set((b.priceJumpOk || []).concat(a.priceJumpOk || [])));
     await DB.write({ put: { items: its, products: [u] }, del: { products: [fromId] } });
     await loadAll();
     toast('已合併到「' + b.name + '」');
@@ -978,12 +1053,13 @@
       return '<div class="card"><div class="spread"><h3>' + esc(i.rawName) + (i.spec ? ' <span class="muted small">' + esc(i.spec) + '</span>' : '') + '</h3>' +
         (i.matchStatus === 'deferred' ? '<span class="badge na">暫時不處理</span>' : '<span class="badge warn">待確認</span>') + '</div>' +
         '<p class="small muted">' + esc(t.store || '') + '・' + esc(dateLabel(t)) + '・金額 ' + money(i.paidAmount) + '</p>' +
-        (cands.length ? '<p class="small">名稱相似的已知商品：</p>' + cands.map((p) => '<div class="spread"><span>' + esc(p.name) + (p.spec ? ' ' + esc(p.spec) : '') + '</span>' +
-          '<button class="btn small" data-act="sameProduct" data-id="' + i.id + '" data-p="' + p.id + '">是同一商品</button></div>').join('') : '') +
+        (i.matchNote ? '<p class="small"><span class="badge warn">' + esc(i.matchNote) + '</span></p>' : '') +
+        (cands.length ? '<p class="small">可能是同一商品的已知商品：</p>' + cands.map((p) => '<div class="cand"><div class="spread"><span>' + esc(p.name) + (p.spec ? ' ' + esc(p.spec) : '') + '</span>' +
+          '<button class="btn small" data-act="sameProduct" data-id="' + i.id + '" data-p="' + p.id + '">是同一商品</button></div>' + dimLine(i, p) + '</div>').join('') : '') +
         (others.length ? '<details><summary class="small">從所有商品中選</summary><div class="row"><select id="pick-' + i.id + '"><option value="">選擇商品…</option>' +
           others.map((p) => '<option value="' + p.id + '">' + esc(p.name + (p.spec ? ' ' + p.spec : '')) + '</option>').join('') + '</select>' +
           '<button class="btn small" data-act="samePicked" data-id="' + i.id + '">是同一商品</button></div></details>' : '') +
-        '<div class="row"><button class="btn small" data-act="diffProduct" data-id="' + i.id + '">是不同商品</button>' +
+        '<div class="row"><input id="ds-' + i.id + '" placeholder="容量（可空白），例如 1858ml" value="' + esc(i.spec || '') + '" aria-label="容量"><button class="btn small" data-act="diffProduct" data-id="' + i.id + '">是不同商品</button></div><div class="row">' +
         (i.matchStatus !== 'deferred' ? '<button class="btn small" data-act="deferProduct" data-id="' + i.id + '">暫時不處理</button>' : '') + '</div></div>';
     }).join('');
     const flagCards = pend.flagged.map((i) => {
@@ -997,13 +1073,29 @@
       '<button class="btn small" data-act="nav" data-to="txn" data-id="' + t.id + '">看明細</button></div></div>').join('');
     const txnFlagCards = pend.txnFlags.map((t) => '<button class="li" data-act="nav" data-to="txn" data-id="' + t.id + '"><span class="title">' + esc(dateLabel(t)) + '・' + esc(t.store || '') + '</span><span class="meta">' +
       openFieldFlags(t).map(([f, v]) => esc((FIELD_LABELS[f] || f) + '：' + flagText(v))).join('；') + '</span></button>').join('');
+    const specCards = pend.specCheck.map(({ product: p, h }) => '<button class="li" data-act="nav" data-to="product" data-id="' + p.id + '"><span class="title">' + esc(p.name) + (p.spec ? ' <span class="muted small">' + esc(p.spec) + '</span>' : '') + '</span>' +
+      '<span class="meta">' + h.rows.filter((r) => r.cmp && r.cmp.status === 'check').map((r) => esc(r.prev.txn.date + ' ' + money(r.prev.price) + ' → ' + r.txn.date + ' ' + money(r.price))).join('；') + '</span></button>').join('');
     return topbar('待確認') + '<main>' +
       (pend.total ? '' : '<div class="notice ok">目前沒有待確認的項目。</div>') +
+      (specCards ? '<section class="stack"><h2>可能是不同容量（' + pend.specCheck.length + '）</h2><p class="small muted">明細沒有容量，價差太大的兩筆先不算漲跌。點進去填容量或確認相同。</p><div class="list">' + specCards + '</div></section>' : '') +
       (matchCards ? '<section class="stack"><h2>是不是同一商品？（' + pend.match.length + '）</h2>' + matchCards + '</section>' : '') +
       (flagCards ? '<section class="stack"><h2>OCR 不確定的數字或名稱（' + pend.flagged.length + '）</h2><p class="small muted">這些列暫時不拿來比價，點進去修改或確認。</p><div class="list">' + flagCards + '</div></section>' : '') +
       (dateCards ? '<section class="stack"><h2>缺少消費日期（' + pend.noDate.length + '）</h2><p class="small muted">沒有日期就無法判斷先後，不會拿來比價。</p>' + dateCards + '</section>' : '') +
       (txnFlagCards ? '<section class="stack"><h2>交易資料待確認（' + pend.txnFlags.length + '）</h2><div class="list">' + txnFlagCards + '</div></section>' : '') +
       '</main>';
+  }
+
+  // 逐項比對結果：✓ 相同、✗ 不同、？ 缺資料
+  function dimLine(i, p) {
+    const own = i.paidAmount > 0 && i.qty > 0 ? i.paidAmount / i.qty : null;
+    const c = L.compareToProduct(i, p, { itemPrice: own, refPrice: priceOf(p) });
+    const mark = { same: '✓', diff: '✗', unknown: '？', similar: '≈' };
+    return '<div class="dims small">' + c.dims.map((d) => {
+      let v = '';
+      if (d.key === 'price') v = d.pct == null ? '' : '（上次 ' + money(d.b) + '，' + (d.pct > 0 ? '+' : '') + d.pct + '%）';
+      else if (d.key === 'spec' || d.key === 'barcode' || d.key === 'brand') v = d.a || d.b ? '（' + (d.a || '空白') + ' / ' + (d.b || '空白') + '）' : '';
+      return '<span class="dim ' + d.result + '">' + mark[d.result] + ' ' + esc(d.label) + esc(v) + '</span>';
+    }).join('') + '</div>';
   }
 
   async function resolveMatch(itemId, how, pid) {
@@ -1018,11 +1110,19 @@
       if (specConflict(i, p)) { toast('規格不同（' + (L.effectiveSpec(i) || '') + ' / ' + p.spec + '），依規則不能當成同一商品', 4500); return; }
       const pu = Object.assign({}, p, { keys: p.keys.slice(), aliases: p.aliases.slice() });
       addAlias(pu, i);
+      // 使用者確認同一商品，價差大也照常比價
+      pu.priceJumpOk = Array.from(new Set((p.priceJumpOk || []).concat([i.id])));
       u.productId = p.id; u.matchStatus = 'manual';
       u.editLog = (i.editLog || []).concat([{ at: now, summary: '確認為同一商品：「' + p.name + '」' }]);
       ops.put.products.push(pu);
     } else if (how === 'diff') {
-      const p = newProduct(i, i.isMock);
+      const si = document.getElementById('ds-' + itemId);
+      const spec = si ? si.value.trim() : '';
+      if (spec && spec !== (i.spec || '')) {
+        u.spec = spec;
+        u.editLog = (i.editLog || []).concat([{ at: now, summary: '規格 ' + show(i.spec) + ' → ' + spec + '（使用者填入）', changes: [{ field: 'spec', from: i.spec, to: spec }] }]);
+      }
+      const p = newProduct(u, i.isMock);
       const key = L.productKey(i);
       for (const cid of i.candidateIds || []) {
         const c = S.pById[cid];
@@ -1030,7 +1130,7 @@
       }
       ops.put.products.push(p);
       u.productId = p.id; u.matchStatus = 'manual-new';
-      u.editLog = (i.editLog || []).concat([{ at: now, summary: '確認為不同商品，另建新商品' }]);
+      u.editLog = (u.editLog || i.editLog || []).concat([{ at: now, summary: '確認為不同商品，另建新商品' }]);
     } else {
       u.matchStatus = 'deferred';
     }
@@ -1380,6 +1480,8 @@
         case 'samePicked': await resolveMatch(el.dataset.id, 'same', document.getElementById('pick-' + el.dataset.id).value); break;
         case 'diffProduct': await resolveMatch(el.dataset.id, 'diff'); break;
         case 'deferProduct': await resolveMatch(el.dataset.id, 'defer'); break;
+        case 'setRowSpec': await setRowSpec(el.dataset.id); break;
+        case 'jumpOk': await jumpOk(el.dataset.p, el.dataset.id); break;
         case 'setDate': {
           const v = document.getElementById('nd-' + el.dataset.id).value;
           if (!v) { toast('請先選日期'); break; }

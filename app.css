@@ -208,3 +208,10 @@ details > summary { cursor: pointer; font-weight: 700; padding: 4px 0; }
 .spark i.last { width: 10px; height: 10px; margin: -5px 0 0 -5px; background: var(--ink); }
 .spark i.last.up { background: var(--up); } .spark i.last.down { background: var(--down); }
 .spark-lbl { display: flex; justify-content: space-between; margin-top: -2px; }
+/* 規格待確認 */
+.spark i.last.check { background: var(--warn); }
+.spec-row { display: grid; gap: 6px; padding: 8px 0; border-top: 1px solid var(--line, rgba(127,127,127,.2)); }
+.spec-row input { flex: 1; min-width: 0; }
+.cand { padding: 6px 0; border-top: 1px solid var(--line, rgba(127,127,127,.2)); }
+.dims { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 4px; }
+.dim.same { color: var(--down); } .dim.diff { color: var(--up); } .dim.unknown, .dim.similar { color: var(--muted, #6b7780); }

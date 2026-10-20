@@ -252,3 +252,46 @@ test('一次選多筆交易的截圖會自動分組，續頁留在同一筆', ()
   assert.deepEqual(L.splitPages([pg({}), pg({})]), [[0, 1]]);
   assert.deepEqual(L.splitPages([pg({}), pg({ date: '2026-09-02' }), pg({})]), [[0, 1, 2]]);
 });
+
+test('同名不同容量：比對名稱、規格、條碼、價格，避免誤認為同一品項', () => {
+  const milk = { id: 'm1', name: '模擬鮮乳', keys: ['模擬鮮乳||'], spec: null, isMock: true };
+  const price = { 'm1': 99, 'm2': 167 };
+  const opt = { priceOf: (p) => price[p.id] };
+  // 明細沒有容量、價差 +68.69% → 待確認，不自動合併
+  const r1 = L.matchProduct({ rawName: '模擬鮮乳', qty: 1, paidAmount: 167, isMock: true }, [milk], opt);
+  assert.equal(r1.type, 'similar');
+  assert.match(r1.reason, /可能是不同容量/);
+  // 價差在 30% 內 → 自動歸入
+  assert.equal(L.matchProduct({ rawName: '模擬鮮乳', qty: 1, paidAmount: 105, isMock: true }, [milk], opt).type, 'exact');
+  // 兩種容量都設定好後，明細沒有容量時依價格對應，並留下說明
+  const a = Object.assign({}, milk, { spec: '936ml' });
+  const b = { id: 'm2', name: '模擬鮮乳', keys: ['模擬鮮乳||ml:1858'], spec: '1858ml', isMock: true };
+  const r2 = L.matchProduct({ rawName: '模擬鮮乳', qty: 1, paidAmount: 165, isMock: true }, [a, b], opt);
+  assert.equal(r2.type, 'price');
+  assert.equal(r2.product.id, 'm2');
+  assert.match(r2.note, /依價格對應到 1858ml/);
+  // 明細有容量時直接依容量
+  assert.equal(L.matchProduct({ rawName: '模擬鮮乳 936ml', qty: 1, paidAmount: 99, isMock: true }, [a, b], opt).product.id, 'm1');
+  // 條碼不同絕不合併；條碼相同直接歸入
+  const c = Object.assign({}, a, { barcode: '4710000000001' });
+  assert.notEqual(L.matchProduct({ rawName: '模擬鮮乳', barcode: '4710000000002', qty: 1, paidAmount: 99, isMock: true }, [c], opt).product, c);
+  assert.equal(L.matchProduct({ rawName: '別的名字', barcode: '4710000000001', isMock: true }, [c], opt).type, 'barcode');
+  // 品牌不同不合併
+  const d = Object.assign({}, a, { brand: '甲牌' });
+  assert.equal(L.compareToProduct({ rawName: '模擬鮮乳', brand: '乙牌' }, d).verdict, 'conflict');
+  // 入數也是規格
+  assert.equal(L.specRelation('200ml*6入', '200ml'), 'diff');
+  assert.equal(L.specRelation('936ml', '0.936L'), 'same');
+  assert.equal(L.specKey('600ml x4瓶'), 'ml:600x4');
+});
+
+test('同一商品價差超過 30%：標示規格待確認，不算漲跌，確認後照常比價', () => {
+  const p = { id: 'p', name: '模擬鮮乳', spec: null };
+  const tById = { t1: { id: 't1', date: '2026-09-02' }, t2: { id: 't2', date: '2026-09-18' } };
+  const items = [{ id: 'i1', txnId: 't1', productId: 'p', qty: 1, paidAmount: 99 }, { id: 'i2', txnId: 't2', productId: 'p', qty: 1, paidAmount: 167 }];
+  const h = L.productHistory(p, items, tById);
+  assert.equal(h.status, 'check');
+  assert.equal(h.cmp.pct, 68.69);
+  const h2 = L.productHistory(Object.assign({ priceJumpOk: ['i2'] }, p), items, tById);
+  assert.equal(h2.status, 'up');
+});
