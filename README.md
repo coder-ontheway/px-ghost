@@ -4,13 +4,13 @@
 
 ## 開啟方式
 
-1. **claude.ai 網址（不用架站）**：https://claude.ai/artifact/5FLr7KrGXvnjSb4FaYfEEt
-   用 iPhone 的 Safari 或 Claude App 登入後開啟。
-2. **自己架站（例如 GitHub Pages，免費）**：把整個 `px-ghost` 資料夾上傳，開啟 `index.html` 所在網址即可。
-   本機測試：在這個資料夾執行 `npx http-server -p 8765 .`，瀏覽器開 `http://127.0.0.1:8765/`。
-   注意：直接雙擊 `index.html`（file://）時 OCR 無法運作，必須透過網址開啟。
+1. **網址（任何人都能直接開，不用登入）**：https://superbigrabbitrabbit-coder.github.io/px-ghost/
+   用 iPhone 的 Safari 開啟，可按「分享 → 加入主畫面」當成 App 使用。
+2. **claude.ai 版**：https://claude.ai/artifact/5FLr7KrGXvnjSb4FaYfEEt
+3. **本機測試**：在這個資料夾執行 `npx http-server -p 8765 .`，瀏覽器開 `http://127.0.0.1:8765/`。
+   直接雙擊 `index.html`（file://）時 OCR 無法運作，必須透過網址開啟。
 
-兩種方式的資料**互不相通**（瀏覽器依網址分開保存），換方式時請用「匯出 JSON 備份 → 還原備份」搬資料。
+不同網址的資料**互不相通**（瀏覽器依網址分開保存），換方式時請用「匯出 JSON 備份 → 還原備份」搬資料。
 
 ## 檔案
 
