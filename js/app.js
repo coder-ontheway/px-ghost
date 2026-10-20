@@ -1003,8 +1003,12 @@
     const realN = S.txns.length - mockN;
     const restoreCard = r
       ? '<section class="card" id="restore" style="border:2px solid var(--accent)"><h2>還原預覽：請選擇下面其中一個按鈕</h2><p class="small">備份時間：' + esc(fmtTime(r.obj.exportedAt)) + '<br>交易 ' + r.obj.data.transactions.length + ' 筆、商品明細 ' + r.obj.data.items.length + ' 列、商品 ' + r.obj.data.products.length + ' 項、截圖 ' + (r.obj.data.images || []).length + ' 張</p>' +
-        '<div class="stack"><button class="btn" data-act="doRestore" data-mode="merge">合併（保留現有資料，只加入沒有的）</button>' +
-        '<button class="btn danger" data-act="doRestore" data-mode="replace">取代（先清空目前全部資料）</button><button class="btn" data-act="cancelRestore">取消</button></div></section>'
+        (r.obj.data.transactions.length
+          ? '<div class="stack"><button class="btn" data-act="doRestore" data-mode="merge">合併（保留現有資料，只加入沒有的）</button>' +
+            '<button class="btn danger" data-act="doRestore" data-mode="replace">取代（先清空目前全部資料）</button><button class="btn" data-act="cancelRestore">取消</button></div></section>'
+          // 空的備份檔還原了也不會有資料，用「取代」還會清掉現有資料，所以直接擋下
+          : '<div class="notice bad">這個備份檔是空的（0 筆交易），可能是在還沒有資料的瀏覽器裡匯出的。請改選有資料的備份檔。</div>' +
+            '<div class="stack"><button class="btn" data-act="cancelRestore">改選其他檔案</button></div></section>')
       : '<section class="card" id="restore"><h2>還原備份</h2><p class="small muted">選擇先前匯出的 .json 備份檔。選好後會先顯示內容，確認後才寫入。</p>' +
         '<label class="btn block" for="restoreFile" style="justify-content:center">選擇備份檔</label><input id="restoreFile" type="file" hidden data-act="restoreFile"></section>';
     return topbar('備份與資料') + '<main>' + (r ? restoreCard : '') +
@@ -1092,7 +1096,7 @@
       render();
       // 預覽放在頁面最上方並捲過去，避免選完檔案後看不到下一步
       window.scrollTo(0, 0);
-      toast('已讀取備份（' + obj.data.transactions.length + ' 筆交易），請選擇「合併」或「取代」', 5000);
+      if (obj.data.transactions.length) toast('已讀取備份（' + obj.data.transactions.length + ' 筆交易），請選擇「合併」或「取代」', 5000);
     } catch (e) { toast('這個檔案不是抓鬼系統的 JSON 備份檔（' + e.message + '）', 5000); }
   }
   async function doRestore(mode) {
