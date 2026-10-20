@@ -1002,12 +1002,12 @@
     const mockN = S.txns.filter((t) => t.isMock).length;
     const realN = S.txns.length - mockN;
     const restoreCard = r
-      ? '<section class="card" id="restore"><h2>還原預覽</h2><p class="small">備份時間：' + esc(fmtTime(r.obj.exportedAt)) + '<br>交易 ' + r.obj.data.transactions.length + ' 筆、商品明細 ' + r.obj.data.items.length + ' 列、商品 ' + r.obj.data.products.length + ' 項、截圖 ' + (r.obj.data.images || []).length + ' 張</p>' +
+      ? '<section class="card" id="restore" style="border:2px solid var(--accent)"><h2>還原預覽：請選擇下面其中一個按鈕</h2><p class="small">備份時間：' + esc(fmtTime(r.obj.exportedAt)) + '<br>交易 ' + r.obj.data.transactions.length + ' 筆、商品明細 ' + r.obj.data.items.length + ' 列、商品 ' + r.obj.data.products.length + ' 項、截圖 ' + (r.obj.data.images || []).length + ' 張</p>' +
         '<div class="stack"><button class="btn" data-act="doRestore" data-mode="merge">合併（保留現有資料，只加入沒有的）</button>' +
         '<button class="btn danger" data-act="doRestore" data-mode="replace">取代（先清空目前全部資料）</button><button class="btn" data-act="cancelRestore">取消</button></div></section>'
       : '<section class="card" id="restore"><h2>還原備份</h2><p class="small muted">選擇先前匯出的 .json 備份檔。選好後會先顯示內容，確認後才寫入。</p>' +
         '<label class="btn block" for="restoreFile" style="justify-content:center">選擇備份檔</label><input id="restoreFile" type="file" hidden data-act="restoreFile"></section>';
-    return topbar('備份與資料') + '<main>' +
+    return topbar('備份與資料') + '<main>' + (r ? restoreCard : '') +
       '<section class="card"><h2>資料保存在哪裡</h2><div class="prose small">' +
       '<p>所有資料（交易、商品、截圖）只存在<b>這支手機的這個瀏覽器</b>裡（IndexedDB），沒有雲端同步，也不會上傳。</p>' +
       '<ul><li>清除 Safari「網站資料」或「瀏覽記錄與網站資料」會刪掉全部紀錄。</li><li>換手機、換瀏覽器、用無痕模式，都看不到原本的資料。</li>' +
@@ -1018,7 +1018,7 @@
       '<button class="btn" data-act="exportJson" data-img="0">匯出 JSON 備份（不含截圖，檔案較小）</button>' +
       '<button class="btn" data-act="exportCsv">匯出 CSV（可用 Excel／Numbers 開啟）</button></div>' +
       '<p class="small muted">CSV 只用來查看與分析，無法用來還原。還原請用 JSON。</p></section>' +
-      restoreCard +
+      (r ? '' : restoreCard) +
       '<section class="card flat"><h2>模擬資料</h2><p class="small muted">用來試用與驗收的假資料，門市名稱為「【模擬】測試門市」，和真實資料分開比對。</p>' +
       '<div class="row"><button class="btn" data-act="loadMock">載入模擬資料</button><button class="btn danger" data-act="clearMock">刪除所有模擬資料</button></div></section>' +
       '<section class="card flat"><h2>刪除全部資料</h2><p class="small muted">無法復原，請先匯出備份。</p><div><button class="btn danger" data-act="wipeAll">刪除全部資料</button></div></section>' +
@@ -1090,6 +1090,9 @@
       if (err) { toast('無法還原：' + err, 4500); return; }
       S.restore = { obj };
       render();
+      // 預覽放在頁面最上方並捲過去，避免選完檔案後看不到下一步
+      window.scrollTo(0, 0);
+      toast('已讀取備份（' + obj.data.transactions.length + ' 筆交易），請選擇「合併」或「取代」', 5000);
     } catch (e) { toast('這個檔案不是抓鬼系統的 JSON 備份檔（' + e.message + '）', 5000); }
   }
   async function doRestore(mode) {
@@ -1240,8 +1243,8 @@
   function armed(el) {
     if (el.dataset.armed === '1') return true;
     el.dataset.armed = '1'; el.classList.add('armed');
-    const old = el.textContent; el.textContent = '再按一次確認';
-    setTimeout(() => { if (el.isConnected) { el.dataset.armed = ''; el.classList.remove('armed'); el.textContent = old; } }, 4000);
+    const old = el.textContent; el.textContent = '再按一次確認（' + old.replace(/（.*$/, '') + '）';
+    setTimeout(() => { if (el.isConnected) { el.dataset.armed = ''; el.classList.remove('armed'); el.textContent = old; } }, 8000);
     return false;
   }
 
@@ -1337,7 +1340,8 @@
         }
         case 'exportJson': await exportJson(el.dataset.img === '1'); break;
         case 'exportCsv': await exportCsv(); break;
-        case 'doRestore': if (el.dataset.mode === 'replace' && !armed(el)) break; await doRestore(el.dataset.mode); break;
+        // 目前沒有資料時「取代」不會刪掉任何東西，不需要按兩次
+        case 'doRestore': if (el.dataset.mode === 'replace' && S.txns.length && !armed(el)) break; await doRestore(el.dataset.mode); break;
         case 'cancelRestore': S.restore = null; render(); break;
         case 'persist': { const r = await DB.requestPersist(); toast(r ? '瀏覽器已同意保留資料' : '瀏覽器沒有同意（Safari 通常要加到主畫面並常用才會同意）', 4000); fillStorageInfo(); break; }
         case 'loadMock': await loadMock(); break;

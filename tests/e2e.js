@@ -152,8 +152,8 @@ const OUT = process.env.OUT || path.join(__dirname, '..', 'test-output');
     await page.evaluate(() => PXApp.go('backup'));
     await page.setInputFiles('#restoreFile', backupPath);
     await page.waitForSelector('text=還原預覽');
+    // 目前沒有資料，「取代」按一次就還原
     await clickText('取代（先清空目前全部資料）');
-    await page.getByRole('button', { name: '再按一次確認' }).click();
     await page.waitForSelector('.tile');
     const t = await tiles();
     assert.equal(t['交易'], 4);
