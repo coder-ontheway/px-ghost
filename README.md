@@ -4,7 +4,7 @@
 
 ## 開啟方式
 
-1. **網址（任何人都能直接開，不用登入）**：https://superbigrabbitrabbit-coder.github.io/px-ghost/
+1. **網址（任何人都能直接開，不用登入）**：https://coder-ontheway.github.io/px-ghost/
    用 iPhone 的 Safari 開啟，可按「分享 → 加入主畫面」當成 App 使用。
 2. **claude.ai 版**：https://claude.ai/artifact/5FLr7KrGXvnjSb4FaYfEEt
 3. **本機測試**：在這個資料夾執行 `npx http-server -p 8765 .`，瀏覽器開 `http://127.0.0.1:8765/`。
